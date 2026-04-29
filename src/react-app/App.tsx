@@ -1,67 +1,142 @@
-// src/App.tsx
-
-import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import "./App.css";
-import cloudflareLogo from "./assets/Cloudflare_Logo.svg";
-import honoLogo from "./assets/hono.svg";
-import reactLogo from "./assets/react.svg";
-import viteLogo from "/vite.svg";
+
+type ServerStatus = {
+  name: string;
+  website: string;
+  status: string;
+};
+
+const formatter = new Intl.DateTimeFormat("zh-CN", {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
+async function fetchServers() {
+  const response = await fetch("/api");
+
+  if (!response.ok) {
+    throw new Error(`Request failed with ${response.status}`);
+  }
+
+  return response.json() as Promise<ServerStatus[]>;
+}
+
+function getHostname(url: string) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
 
 function App() {
-  const [count, setCount] = useState(0);
-  const [name, setName] = useState("unknown");
+  const {
+    data: servers = [],
+    error,
+    isError,
+    isLoading,
+    isFetching,
+    dataUpdatedAt,
+    refetch,
+  } = useQuery({
+    queryKey: ["server-status"],
+    queryFn: fetchServers,
+  });
+
+  const normalCount = servers.filter(
+    (server) => server.status === "normal",
+  ).length;
+  const issueCount = servers.length - normalCount;
+  const updatedTime = dataUpdatedAt
+    ? formatter.format(dataUpdatedAt)
+    : "--:--:--";
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-        <a href="https://hono.dev/" target="_blank">
-          <img src={honoLogo} className="logo cloudflare" alt="Hono logo" />
-        </a>
-        <a href="https://workers.cloudflare.com/" target="_blank">
-          <img
-            src={cloudflareLogo}
-            className="logo cloudflare"
-            alt="Cloudflare logo"
-          />
-        </a>
-      </div>
-      <h1>Vite + React + Hono + Cloudflare</h1>
-      <div className="card">
+    <main className="status-page">
+      <section className="hero">
+        <div>
+          <p className="eyebrow">Server Online</p>
+          <h1>服务状态</h1>
+        </div>
         <button
-          onClick={() => setCount((count) => count + 1)}
-          aria-label="increment"
+          className="reload-button"
+          type="button"
+          onClick={() => void refetch()}
+          disabled={isFetching}
+          aria-label="Loading Status"
         >
-          count is {count}
+          <span aria-hidden="true">{isFetching ? "..." : "↻"}</span>
+          <span>{isFetching ? "Loading..." : "Reload"}</span>
         </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <div className="card">
-        <button
-          onClick={() => {
-            fetch("/api/")
-              .then((res) => res.json())
-              .then((data) => {
-                console.log(data);
-              });
-          }}
-          aria-label="get name"
-        >
-          Name from API is: {name}
-        </button>
-        <p>
-          Edit <code>worker/index.ts</code> to change the name
-        </p>
-      </div>
-      <p className="read-the-docs">Click on the logos to learn more</p>
-    </>
+      </section>
+
+      <section className="summary-grid" aria-label="服务状态统计">
+        <article className="summary-panel">
+          <span>总服务</span>
+          <strong>{servers.length}</strong>
+        </article>
+        <article className="summary-panel success">
+          <span>正常</span>
+          <strong>{normalCount}</strong>
+        </article>
+        <article className="summary-panel danger">
+          <span>异常</span>
+          <strong>{issueCount}</strong>
+        </article>
+        <article className="summary-panel">
+          <span>更新时间</span>
+          <strong>{updatedTime}</strong>
+        </article>
+      </section>
+
+      <section className="service-list" aria-label="服务列表">
+        {isLoading ? (
+          Array.from({ length: 8 }).map((_, index) => (
+            <div className="service-row skeleton" key={index}>
+              <div />
+              <div />
+              <div />
+            </div>
+          ))
+        ) : isError ? (
+          <div className="empty-state" role="alert">
+            <strong>请求失败</strong>
+            <span>
+              {error instanceof Error ? error.message : "无法获取服务状态"}
+            </span>
+          </div>
+        ) : (
+          servers.map((server) => {
+            const isNormal = server.status === "normal";
+
+            return (
+              <a
+                className="service-row"
+                href={server.website}
+                key={`${server.name}-${server.website}`}
+                rel="noreferrer"
+                target="_blank"
+              >
+                <span className="service-name">{server.name}</span>
+                <span className="service-url">
+                  {getHostname(server.website)}
+                </span>
+                <span
+                  className={
+                    isNormal ? "status-pill normal" : "status-pill issue"
+                  }
+                >
+                  <span aria-hidden="true" />
+                  {isNormal ? "正常" : server.status}
+                </span>
+              </a>
+            );
+          })
+        )}
+      </section>
+    </main>
   );
 }
 
