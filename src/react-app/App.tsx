@@ -1,4 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type FormEvent, useState } from "react";
 import "./App.css";
 
 type ServerStatus = {
@@ -7,14 +8,32 @@ type ServerStatus = {
   status: string;
 };
 
+type AuthStatus = {
+  authenticated: boolean;
+};
+
 const formatter = new Intl.DateTimeFormat("zh-CN", {
   hour: "2-digit",
   minute: "2-digit",
   second: "2-digit",
 });
 
+async function fetchSession() {
+  const response = await fetch("/api/session");
+
+  if (!response.ok) {
+    throw new Error("无法确认登录状态");
+  }
+
+  return response.json() as Promise<AuthStatus>;
+}
+
 async function fetchServers() {
   const response = await fetch("/api");
+
+  if (response.status === 401) {
+    throw new Error("请先登录");
+  }
 
   if (!response.ok) {
     throw new Error(`Request failed with ${response.status}`);
@@ -32,6 +51,15 @@ function getHostname(url: string) {
 }
 
 function App() {
+  const queryClient = useQueryClient();
+  const [password, setPassword] = useState("");
+
+  const sessionQuery = useQuery({
+    queryKey: ["auth-session"],
+    queryFn: fetchSession,
+    retry: false,
+  });
+
   const {
     data: servers = [],
     error,
@@ -43,6 +71,50 @@ function App() {
   } = useQuery({
     queryKey: ["server-status"],
     queryFn: fetchServers,
+    enabled: sessionQuery.data?.authenticated === true,
+  });
+
+  const loginMutation = useMutation({
+    mutationFn: async (nextPassword: string) => {
+      const response = await fetch("/api/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ password: nextPassword }),
+      });
+
+      if (!response.ok) {
+        throw new Error("密码不正确");
+      }
+
+      return response.json() as Promise<AuthStatus>;
+    },
+    onSuccess: async () => {
+      setPassword("");
+      await queryClient.invalidateQueries({ queryKey: ["auth-session"] });
+      await queryClient.invalidateQueries({ queryKey: ["server-status"] });
+    },
+  });
+
+  const logoutMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/logout", {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        throw new Error("退出失败");
+      }
+
+      return response.json() as Promise<AuthStatus>;
+    },
+    onSuccess: () => {
+      queryClient.setQueryData<AuthStatus>(["auth-session"], {
+        authenticated: false,
+      });
+      queryClient.removeQueries({ queryKey: ["server-status"] });
+    },
   });
 
   const normalCount = servers.filter(
@@ -52,6 +124,71 @@ function App() {
   const updatedTime = dataUpdatedAt
     ? formatter.format(dataUpdatedAt)
     : "--:--:--";
+  const isAuthenticated = sessionQuery.data?.authenticated === true;
+
+  function handleLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    loginMutation.mutate(password);
+  }
+
+  if (sessionQuery.isLoading) {
+    return (
+      <main className="auth-page">
+        <section className="auth-panel">
+          <p className="eyebrow">Server Online</p>
+          <h1>验证登录中</h1>
+          <div className="auth-loading" />
+        </section>
+      </main>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <main className="auth-page">
+        <section className="auth-panel">
+          <div>
+            <p className="eyebrow">Server Online</p>
+            <h1>登录</h1>
+          </div>
+
+          <form className="login-form" onSubmit={handleLogin}>
+            <label htmlFor="password">密码</label>
+            <input
+              autoComplete="current-password"
+              autoFocus
+              id="password"
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="输入访问密码"
+              type="password"
+              value={password}
+            />
+            {loginMutation.isError ? (
+              <p className="form-error">
+                {loginMutation.error instanceof Error
+                  ? loginMutation.error.message
+                  : "登录失败"}
+              </p>
+            ) : null}
+            {sessionQuery.isError ? (
+              <p className="form-error">
+                {sessionQuery.error instanceof Error
+                  ? sessionQuery.error.message
+                  : "无法确认登录状态"}
+              </p>
+            ) : null}
+            <button
+              className="login-button"
+              disabled={!password || loginMutation.isPending}
+              type="submit"
+            >
+              {loginMutation.isPending ? "登录中" : "进入"}
+            </button>
+          </form>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="status-page">
@@ -60,16 +197,26 @@ function App() {
           <p className="eyebrow">Server Online</p>
           <h1>服务状态</h1>
         </div>
-        <button
-          className="reload-button"
-          type="button"
-          onClick={() => void refetch()}
-          disabled={isFetching}
-          aria-label="Loading Status"
-        >
-          <span aria-hidden="true">{isFetching ? "..." : "↻"}</span>
-          <span>{isFetching ? "Loading..." : "Reload"}</span>
-        </button>
+        <div className="action-bar">
+          <button
+            className="reload-button"
+            type="button"
+            onClick={() => void refetch()}
+            disabled={isFetching}
+            aria-label="刷新状态"
+          >
+            <span aria-hidden="true">{isFetching ? "..." : "↻"}</span>
+            <span>{isFetching ? "刷新中" : "刷新"}</span>
+          </button>
+          <button
+            className="logout-button"
+            disabled={logoutMutation.isPending}
+            onClick={() => logoutMutation.mutate()}
+            type="button"
+          >
+            退出
+          </button>
+        </div>
       </section>
 
       <section className="summary-grid" aria-label="服务状态统计">
